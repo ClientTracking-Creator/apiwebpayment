@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { verifySessionToken } from '../../account-status/token';
 import { getAppSettings, updateSubscriptionExpiry } from '../../firebase/firestore';
 
+export const preferredRegion = 'sin1';
+
 const plans = {
   '1month': { months: 1 },
   '3month': { months: 3 },
