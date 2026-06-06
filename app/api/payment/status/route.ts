@@ -57,7 +57,18 @@ export async function POST(request: Request) {
       },
       body: JSON.stringify({ md5: md5Hash })
     });
-    const data = await response.json();
+    const responseText = await response.text();
+    const contentType = response.headers.get('content-type') || '';
+    const data = contentType.includes('application/json') && responseText
+      ? JSON.parse(responseText)
+      : {
+        responseCode: 1,
+        responseMessage: response.ok
+          ? 'Bakong returned an unexpected response.'
+          : `Bakong request failed with HTTP ${response.status}.`,
+        upstreamStatus: response.status,
+        upstreamContentType: contentType
+      };
     const paid = data?.responseCode === 0 || Boolean(data?.data);
     let subscriptionExpiry = '';
 
