@@ -1,5 +1,6 @@
 'use client';
 
+import type { ChangeEvent } from 'react';
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { QRCodeSVG } from 'qrcode.react';
@@ -26,6 +27,12 @@ type PaymentRequest = {
   expiresAt: number;
 };
 
+type ProofImage = {
+  imageData: string;
+  fileName: string;
+  contentType: string;
+};
+
 const plans: Plan[] = [
   { id: '1month', title: '1 ខែ', price: '$5', amount: 5, months: 1 },
   { id: '3month', title: '3 ខែ', price: '$13', amount: 13, months: 3 },
@@ -34,6 +41,7 @@ const plans: Plan[] = [
 ];
 
 const telegramUrl = 'https://t.me/kimhunsellmotor';
+const manualProofMessage = 'សូមអរគុណសម្រាប់ការជាវរបស់លោកអ្នក។ សូមអភ័យទោសសម្រាប់ការរង់ចាំបន្តិច។ ប្រព័ន្ធ​នឹង​រួចរាល់យ៉ាងយូរបំផុត​ក្នុងរយៈពេល 24 ម៉ោង។';
 
 const formatDate = (date: Date) =>
   new Intl.DateTimeFormat('km-KH', {
@@ -50,6 +58,40 @@ const formatTime = (seconds: number) => {
 
 const formatPaymentAmount = (amount: number) =>
   Number.isInteger(amount) ? amount.toString() : amount.toFixed(2);
+
+const compressImage = (file: File) =>
+  new Promise<ProofImage>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Unable to read image.'));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error('Unable to load image.'));
+      image.onload = () => {
+        const maxSide = 900;
+        const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
+        const width = Math.max(1, Math.round(image.width * scale));
+        const height = Math.max(1, Math.round(image.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext('2d');
+
+        if (!context) {
+          reject(new Error('Unable to prepare image.'));
+          return;
+        }
+
+        context.drawImage(image, 0, 0, width, height);
+        resolve({
+          imageData: canvas.toDataURL('image/jpeg', 0.72),
+          fileName: file.name || 'payment-proof.jpg',
+          contentType: 'image/jpeg'
+        });
+      };
+      image.src = String(reader.result || '');
+    };
+    reader.readAsDataURL(file);
+  });
 
 function KHQRPaymentCard({ qrString, amount }: { qrString: string; amount: number }) {
   return (
@@ -134,6 +176,10 @@ function MemberContent() {
   const [paymentStatus, setPaymentStatus] = useState('ស្កេន QR ដើម្បីបង់ប្រាក់');
   const [timeLeft, setTimeLeft] = useState(300);
   const [successExpiry, setSuccessExpiry] = useState('');
+  const [proofImage, setProofImage] = useState<ProofImage | null>(null);
+  const [proofError, setProofError] = useState('');
+  const [proofSending, setProofSending] = useState(false);
+  const [manualProofSubmitted, setManualProofSubmitted] = useState(false);
 
   useEffect(() => {
     if (!token) return;
@@ -191,6 +237,10 @@ function MemberContent() {
     setPayment(null);
     setPaymentStatus('កំពុងបង្កើត QR...');
     setTimeLeft(300);
+    setProofImage(null);
+    setProofError('');
+    setProofSending(false);
+    setManualProofSubmitted(false);
 
     try {
       const response = await fetch('/api/payment/create', {
@@ -236,6 +286,61 @@ function MemberContent() {
       setPaymentStatus('មិនអាចពិនិត្យការបង់ប្រាក់បានទេ។');
     }
   }, [getNextExpiryIso, payment, paymentSuccess, selectedPlan?.id, token]);
+
+  const handleProofImageChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    setProofError('');
+    setProofImage(null);
+
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setProofError('សូមជ្រើសរើសរូបភាពបង្កាន់ដៃបង់ប្រាក់។');
+      return;
+    }
+
+    try {
+      const nextImage = await compressImage(file);
+      if (nextImage.imageData.length > 850_000) {
+        setProofError('រូបភាពធំពេក។ សូមជ្រើសរើសរូបភាពតូចជាងនេះ។');
+        return;
+      }
+      setProofImage(nextImage);
+    } catch {
+      setProofError('មិនអាចរៀបចំរូបភាពបានទេ។ សូមព្យាយាមម្តងទៀត។');
+    }
+  };
+
+  const submitPaymentProof = async () => {
+    if (!payment?.md5 || !selectedPlan || !proofImage || proofSending) return;
+
+    setProofSending(true);
+    setProofError('');
+
+    try {
+      const response = await fetch('/api/payment/proof', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token,
+          planId: selectedPlan.id,
+          md5: payment.md5,
+          imageData: proofImage.imageData,
+          fileName: proofImage.fileName,
+          contentType: proofImage.contentType
+        })
+      });
+      const data = await response.json();
+
+      if (!response.ok) throw new Error(data?.error || 'Unable to send proof.');
+
+      setManualProofSubmitted(true);
+    } catch {
+      setProofError('មិនអាចផ្ញើទៅ admin បានទេ។ សូមព្យាយាមម្តងទៀត។');
+    } finally {
+      setProofSending(false);
+    }
+  };
 
   const openStatusPage = useCallback(() => {
     const params = new URLSearchParams();
@@ -452,6 +557,46 @@ function MemberContent() {
 
                 <p className="mb-6 text-center text-lg font-semibold">Scan QR Code to Pay</p>
 
+                <div className="mb-5 rounded-2xl border border-[#3a3a3c] bg-[#121212] p-4">
+                  <div className="mb-3">
+                    <p className="text-base font-black text-white">Upload payment transaction photo</p>
+                    <p className="mt-1 text-sm leading-6 text-zinc-400">
+                      After paying, upload the receipt photo and send it to admin for manual approval.
+                    </p>
+                  </div>
+
+                  <label className="flex cursor-pointer items-center justify-center rounded-xl border border-dashed border-[#ccff00]/60 bg-[#ccff00]/10 px-4 py-4 text-sm font-black text-[#ccff00] active:bg-[#ccff00]/20">
+                    {proofImage ? 'Change uploaded photo' : 'Choose transaction photo'}
+                    <input
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleProofImageChange}
+                      type="file"
+                    />
+                  </label>
+
+                  {proofImage && (
+                    <div className="mt-4 overflow-hidden rounded-xl border border-[#3a3a3c] bg-black">
+                      <img alt="Payment transaction proof preview" className="max-h-72 w-full object-contain" src={proofImage.imageData} />
+                    </div>
+                  )}
+
+                  {proofError && (
+                    <p className="mt-3 rounded-xl bg-red-500/15 px-4 py-3 text-sm font-semibold text-red-200">
+                      {proofError}
+                    </p>
+                  )}
+
+                  <button
+                    className="mt-4 w-full rounded-2xl bg-[#229ED9] p-4 text-base font-black text-white disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+                    disabled={!payment?.md5 || !proofImage || proofSending}
+                    onClick={submitPaymentProof}
+                    type="button"
+                  >
+                    {proofSending ? 'Sending...' : 'Send to Admin'}
+                  </button>
+                </div>
+
                 <button
                   className="w-full rounded-2xl bg-[#ccff00] p-4 text-lg font-black text-black"
                   disabled={!payment?.md5}
@@ -474,6 +619,24 @@ function MemberContent() {
               </div>
             )}
           </div>
+
+          {manualProofSubmitted && (
+            <div className="absolute inset-0 z-50 grid place-items-center bg-black/80 px-6">
+              <div className="w-full max-w-md rounded-2xl border border-[#ccff00]/50 bg-[#1e1e1e] p-6 text-center shadow-2xl shadow-black/40">
+                <div className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-full bg-[#ccff00] text-3xl font-black text-black">
+                  ✓
+                </div>
+                <p className="text-lg font-black leading-8 text-white">{manualProofMessage}</p>
+                <button
+                  className="mt-6 w-full rounded-2xl bg-[#ccff00] p-4 text-base font-black text-black"
+                  onClick={() => setManualProofSubmitted(false)}
+                  type="button"
+                >
+                  OK
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </main>
