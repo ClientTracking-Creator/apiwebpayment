@@ -105,7 +105,7 @@ export const submitPaymentProof = async (
               planId: { stringValue: proof.planId },
               planTitle: { stringValue: proof.planTitle },
               amount: { doubleValue: proof.amount },
-              months: { integerValue: proof.months },
+              months: { integerValue: String(proof.months) },
               md5: { stringValue: proof.md5 },
               imageData: { stringValue: proof.imageData },
               fileName: { stringValue: proof.fileName },
